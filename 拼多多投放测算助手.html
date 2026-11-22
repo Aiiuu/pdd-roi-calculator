@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<title>拼多多投放测算助手</title>
+
+<!-- Tailwind (Play CDN) -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'media',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['-apple-system','BlinkMacSystemFont','SF Pro Display','SF Pro Text','PingFang SC','Helvetica Neue','Microsoft YaHei','sans-serif'],
+        },
+        borderRadius: {
+          glass: '16px',
+        },
+      }
+    }
+  }
+</script>
+
+<!-- Framer Motion -->
+<script src="https://unpkg.com/framer-motion@10.18.0/dist/framer-motion.js"></script>
+
+<style>
+  /* ============================================================
+     毛玻璃材质（克制版）
+     ① 半透+模糊  ② 柔和折射色散  ③ 镜面高光+边缘
+     ④ 弹簧动效
+     ============================================================ */
+
+  :root {
+    color-scheme: light dark;
+
+    /* —— 材质基底（低饱和莫兰迪）—— */
+    --glass-tint: rgba(255,255,255,0.72);       /* 玻璃主体：更实、提升可读性 */
+    --glass-tint-strong: rgba(255,255,255,0.88);
+    --glass-fill: rgba(250,251,253,0.8);        /* 填充层 */
+    --glass-stroke: rgba(255,255,255,0.9);      /* 外描边 */
+    --glass-stroke-inner: rgba(255,255,255,0.5);
+
+    /* —— 光学参数（克制）—— */
+    --lens-blur: 14px;
+    --lens-saturate: 1.3;
+    --lens-brightness: 1.02;
+    --specular: rgba(255,255,255,0.6);          /* 镜面高光：减弱 */
+
+    /* —— 环境光（底色略深）—— */
+    --amb-1: #b9c9e2; --amb-2: #e4d2c2; --amb-3: #b3cfe0;
+
+    /* —— 前景色 —— */
+    --ink: #1b1e26;
+    --ink-sub: #5c6470;
+    --ink-faint: #9aa1ad;
+    --accent: #5b7a9d; --accent-2: #7a9bb8;   /* 低饱和冷调强调色（原红已移除） */
+    --ok: #3a8f5e; --warn: #8a7a55; --bad: #a05b5b; --blue: #4a76a8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --glass-tint: rgba(32,34,46,0.78);
+      --glass-tint-strong: rgba(28,30,42,0.9);
+      --glass-fill: rgba(24,26,36,0.82);
+      --glass-stroke: rgba(255,255,255,0.16);
+      --glass-stroke-inner: rgba(255,255,255,0.08);
+      --lens-brightness: 1.0;
+      --specular: rgba(255,255,255,0.18);
+      --fresnel: rgba(255,255,255,0.16);
+      --rim: rgba(255,255,255,0.28);
+      --amb-1: #10141f; --amb-2: #1e1420; --amb-3: #101a28;
+      --ink: #eef1f7;
+      --ink-sub: #a0a8b6;
+      --ink-faint: #6b7280;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  body {
+    margin: 0; min-height: 100vh; line-height: 1.5;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+      "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1100px 640px at 6% -8%, var(--amb-2), transparent 58%),
+      radial-gradient(980px 720px at 104% 12%, var(--amb-3), transparent 55%),
+      radial-gradient(900px 620px at 50% 112%, var(--amb-2), transparent 55%),
+      var(--amb-1);
+    background-attachment: fixed;
+    overflow-x: hidden;
+  }
+
+  /* 环境光晕：柔和背景（克制，避免发灰） */
+  .aurora { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  .aurora i {
+    position: absolute; border-radius: 50%; filter: blur(80px);
+    mix-blend-mode: screen; opacity: .3; will-change: transform;
+    animation: drift 30s ease-in-out infinite alternate;
+  }
+  .aurora i:nth-child(1){ width:46vw; height:46vw; left:-12vw; top:-14vw;
+    background: radial-gradient(circle, #8fb6ff, transparent 62%); }
+  .aurora i:nth-child(2){ width:40vw; height:40vw; right:-10vw; bottom:-14vw;
+    background: radial-gradient(circle, #ffb08a, transparent 62%); animation-delay:-14s; }
+  .aurora i:nth-child(3){ width:34vw; height:34vw; left:32vw; top:46vh;
+    background: radial-gradient(circle, #9fe6c2, transparent 60%); animation-delay:-7s; }
+  @keyframes drift {
+    from { transform: translate3d(0,0,0) scale(1); }
+    to   { transform: translate3d(5vw,4vh,0) scale(1.14); }
+  }
+
+  /* ============================================================
+     核心材质 .lg —— 毛玻璃卡片
+     ============================================================ */
+  .lg {
+    position: relative;
+    background: var(--glass-tint);
+    -webkit-backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-saturate)) brightness(var(--lens-brightness));
+    backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-saturate)) brightness(var(--lens-brightness));
+    border: 1px solid var(--glass-stroke);
+    border-radius: 16px;
+    /* 镜面高光 + 菲涅尔边缘 + 亮环（多层 inset 阴影模拟透镜边界） */
+    box-shadow:
+      inset 0 1.5px 0.5px -0.5px var(--specular),   /* 顶部镜面线（锐利） */
+      inset 0 -1px 0 0 var(--glass-stroke-inner),
+      inset 1px 0 0 0 var(--glass-stroke-inner),    /* 左右边缘光 */
+      inset -1px 0 0 0 var(--glass-stroke-inner),
+      0 1px 2px rgba(0,0,0,0.05),
+      0 24px 60px -24px rgba(50,62,90,0.35),
+      0 8px 24px -10px rgba(50,62,90,0.20);
+    isolation: isolate;
+    overflow: hidden;
+    /* 指针透镜变量 */
+    --lx: 50%; --ly: 0%;
+  }
+
+  /* 柔和色散层（克制，避免发灰） */
+  .lg::before {
+    content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    border-radius: inherit;
+    background:
+      linear-gradient(150deg, rgba(255,200,175,0.18) 0%, transparent 30%),
+      linear-gradient(320deg, rgba(175,205,245,0.16) 0%, transparent 32%);
+    mix-blend-mode: normal;
+    opacity: .5;
+  }
+  @media (prefers-color-scheme: dark) {
+    .lg::before { opacity: .28; }
+  }
+
+  /* 顶部镜面高光（克制） */
+  .lg::after {
+    content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    border-radius: inherit;
+    background:
+      linear-gradient(180deg, var(--specular) 0%, transparent 14%);
+    opacity: .5;
+    transition: opacity .4s ease;
+  }
+  @media (prefers-color-scheme: dark) {
+    .lg::after {
+      background: linear-gradient(180deg, var(--specular) 0%, transparent 14%);
+    }
+  }
+
+  /* 玻璃边界亮环（菲涅尔 rim） */
+  .lg .rim {
+    position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: inset 0 0 0 1px var(--glass-stroke-inner);
+  }
+
+  .lg > * { position: relative; z-index: 1; }
+
+  /* 悬浮：轻微形变 + 弹簧回弹（Apple signature ease-out） */
+  .lg-hover {
+    transition:
+      transform .55s cubic-bezier(.16,1,.3,1),
+      box-shadow .55s cubic-bezier(.16,1,.3,1);
+    will-change: transform;
+  }
+  .lg-hover:hover {
+    transform: translateY(-3px) scale(1.005);
+    box-shadow:
+      inset 0 1.5px 0.5px -0.5px var(--specular),
+      inset 0 -1px 0 0 var(--glass-stroke-inner),
+      inset 1px 0 0 0 var(--glass-stroke-inner),
+      inset -1px 0 0 0 var(--glass-stroke-inner),
+      0 2px 4px rgba(0,0,0,0.06),
+      0 34px 80px -26px rgba(50,62,90,0.42),
+      0 12px 32px -10px rgba(50,62,90,0.24);
+  }
+
+  /* ============================================================
+     控件（HIG 尺寸）
+     ============================================================ */
+  .field-label { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+  .field-hint  { font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+
+  .input-lg {
+    width: 100%; height: 40px; padding: 0 13px; font-size: 15px; color: var(--ink);
+    background: var(--glass-fill);
+    -webkit-backdrop-filter: blur(10px) saturate(1.5);
+    backdrop-filter: blur(10px) saturate(1.5);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px; outline: none;
+    box-shadow: inset 0 1px 0 0 var(--glass-stroke-inner);
+    transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    -webkit-appearance: none; appearance: none;
+  }
+  .input-lg::placeholder { color: var(--ink-faint); }
+  .input-lg:hover { border-color: color-mix(in srgb, var(--glass-stroke) 60%, var(--accent)); }
+  .input-lg:focus {
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-stroke-inner),
+      0 0 0 4px color-mix(in srgb, var(--accent) 13%, transparent);
+    background: var(--glass-tint-strong);
+  }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+
+  /* ============================================================
+     结果呈现
+     ============================================================ */
+  .big-num {
+    font-size: clamp(22px, 5vw, 27px); font-weight: 700; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  .big-num.primary { color: var(--accent); }
+  .big-num.good { color: var(--ok); }
+  .big-num.bad { color: var(--bad); }
+  .big-num.warn { color: var(--warn); }
+  .stat-label { font-size: 12px; font-weight: 500; color: var(--ink-sub); margin-top: 4px; }
+
+  .d-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; font-size: 13px; }
+  .d-row .k { color: var(--ink-sub); }
+  .d-row .v { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .v.pos { color: var(--ok); } .v.neg { color: var(--bad); } .v.mid { color: var(--warn); }
+
+  .concl { border-radius: 13px; padding: 13px 15px; font-size: 13px; font-weight: 600; line-height: 1.6;
+    -webkit-backdrop-filter: blur(10px) saturate(1.4); backdrop-filter: blur(10px) saturate(1.4);
+    border: 1px solid; }
+  .concl .badge { display: inline-block; padding: 2px 11px; border-radius: 20px; color: #fff; font-size: 12px; margin-right: 8px; font-weight: 700; }
+  .concl.profit { background: color-mix(in srgb, var(--ok) 11%, transparent); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 28%, transparent); }
+  .concl.profit .badge { background: var(--ok); }
+  .concl.thin   { background: color-mix(in srgb, var(--warn) 13%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+  .concl.thin .badge { background: var(--warn); }
+  .concl.even   { background: color-mix(in srgb, var(--blue) 11%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 28%, transparent); }
+  .concl.even .badge { background: var(--blue); }
+  .concl.loss   { background: color-mix(in srgb, var(--bad) 13%, transparent); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+  .concl.loss .badge { background: var(--bad); }
+
+  .warnbar {
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+    color: var(--warn); border-radius: 12px; padding: 10px 13px; font-size: 12.5px;
+  }
+
+  .f-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid var(--glass-stroke-inner); font-size: 12px; }
+  .f-row:last-child { border-bottom: none; }
+  .f-row .expr { color: var(--ink-sub); font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11px; flex: 1; }
+  .f-row .fv { font-weight: 700; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .logo-tile {
+    width: 40px; height: 40px; border-radius: 12px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 800; font-size: 19px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 10px 24px -8px color-mix(in srgb, var(--accent) 55%, transparent),
+      inset 0 1px 0 0 rgba(255,255,255,0.35);
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  .hide { display: none !important; }
+  ::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+  .lg, .input-lg, .logo-tile { -webkit-transform: translateZ(0); }
+
+  /* ============================================================
+     macOS UISegmentedControl 分段控件（毛玻璃）
+     ============================================================ */
+  .segmented {
+    position: relative;
+    display: flex; gap: 3px; padding: 3px;
+    background: color-mix(in srgb, var(--glass-fill) 88%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    backdrop-filter: blur(16px) saturate(1.4);
+    border: 1px solid var(--glass-stroke);
+    border-radius: 12px;
+    /* 轻微内阴影，不厚重 */
+    box-shadow:
+      inset 0 1px 0 0 var(--glass-stroke-inner),
+      0 1px 2px rgba(0,0,0,0.04);
+  }
+  .segmented button {
+    position: relative;
+    flex: 1; height: 36px; padding: 0 10px;
+    border: none; background: transparent; cursor: pointer;
+    font-family: inherit;
+    font-size: 13px; font-weight: 600; letter-spacing: -.01em;
+    color: var(--ink-sub);
+    border-radius: 9px;
+    white-space: nowrap;
+    /* 苹果签名缓动 + 弹性 */
+    transition:
+      color .24s cubic-bezier(.16,1,.3,1),
+      background-color .24s cubic-bezier(.16,1,.3,1),
+      box-shadow .24s cubic-bezier(.16,1,.3,1),
+      transform .3s cubic-bezier(.34,1.56,.64,1); /* 回弹 */
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 未选中：半透明玻璃感 */
+  .segmented button:hover {
+    color: var(--ink);
+    background: color-mix(in srgb, var(--glass-tint) 55%, transparent);
+  }
+  .segmented button:active {
+    transform: scale(.96);
+  }
+  /* 选中：白色实心胶囊（浅色）/ 玻璃填充（深色），清晰高亮 */
+  .segmented button.active {
+    color: var(--ink);
+    background: var(--glass-tint-strong);
+    box-shadow:
+      0 1px 3px rgba(0,0,0,0.10),
+      inset 0 1px 0 0 var(--specular),
+      inset 0 -1px 0 0 var(--glass-stroke-inner);
+  }
+  /* 选中瞬间的弹性缩放（轻弹一下，不生硬） */
+  .segmented button.active.pop {
+    animation: seg-pop .34s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes seg-pop {
+    0%   { transform: scale(.92); }
+    60%  { transform: scale(1.03); }
+    100% { transform: scale(1); }
+  }
+  @media (prefers-color-scheme: dark) {
+    .segmented button.active {
+      background: color-mix(in srgb, var(--glass-tint-strong) 90%, var(--ink));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .aurora i, .lg-hover { animation: none !important; transition: none !important; }
+    .segmented button { transition: none !important; }
+    .segmented button.active.pop { animation: none !important; }
+  }
+</style>
+
+</head>
+<body>
+
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<div class="max-w-[680px] mx-auto px-4 pb-20 pt-6">
+
+  <!-- 头部 -->
+  <header class="flex items-center gap-3 pb-5">
+    <div class="logo-tile">拼</div>
+    <div class="min-w-0">
+      <h1 class="text-[19px] font-bold tracking-[-0.02em] leading-tight">拼多多投放测算助手</h1>
+      <p class="text-[12px] text-[var(--ink-sub)] mt-0.5">多多搜索 · 多多场景 · 全站推广 · 成交出价</p>
+    </div>
+  </header>
+
+  <!-- 第一行标签：模式切换 -->
+  <div id="modes" class="segmented mb-4">
+    <button data-mode="A" class="active">算定价</button>
+    <button data-mode="B">算投产比</button>
+    <button data-mode="C">两个都要</button>
+  </div>
+
+  <!-- 第二行标签：扣费方式 -->
+  <div id="billSeg" class="segmented mb-4">
+    <button data-bill="click" class="active">点击扣费 OCPX</button>
+    <button data-bill="deal">成交出价</button>
+  </div>
+
+  <!-- 输入卡片 -->
+  <section class="lg lg-hover p-5">
+    <div class="rim" aria-hidden="true"></div>
+    <div class="flex items-center gap-2 mb-1">
+      <h2 class="text-[15px] font-bold">输入参数</h2>
+    </div>
+    <p class="hint text-[12px] text-[var(--ink-sub)] mb-4">金额均为「元」；售价 = 实付到手价（含券/满减/百亿补贴），订单只算广告归因。</p>
+
+    <!-- A 段 -->
+    <div id="fieldA" class="space-y-3.5">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="flex items-center justify-between field-label mb-1.5">单均全成本</label>
+          <input type="number" id="cost" inputmode="decimal" class="input-lg" placeholder="全成本">
+        </div>
+        <div>
+          <label class="flex items-center justify-between field-label mb-1.5">货本 <span class="field-hint">仅提醒</span></label>
+          <input type="number" id="goodsCost" inputmode="decimal" class="input-lg" placeholder="只报货本需补齐">
+        </div>
+      </div>
+      <div>
+        <label class="field-label mb-1.5">目标投产比 <span class="field-hint">与每单广告费二选一</span></label>
+        <input type="number" id="targetRoi" inputmode="decimal" class="input-lg" placeholder="如 3.0 = 1 元广告换 3 元 GMV">
+      </div>
+      <div>
+        <label class="field-label mb-1.5">每单广告费 <span class="field-hint">与目标投产比二选一</span></label>
+        <input type="number" id="adPerOrder" inputmode="decimal" class="input-lg" placeholder="每单扣多少">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="field-label mb-1.5">目标单均净利 <span class="field-hint">可选</span></label>
+          <input type="number" id="profit" inputmode="decimal" class="input-lg" placeholder="0 即保本">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">退款率 r <span class="field-hint">0–1</span></label>
+          <input type="number" id="refundRate" inputmode="decimal" step="0.01" class="input-lg" placeholder="0.25 = 25%">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="field-label mb-1.5">退款回收率 k <span class="field-hint">仅退款≈0</span></label>
+          <input type="number" id="k" inputmode="decimal" step="0.01" value="0" class="input-lg" placeholder="0">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">进宝佣金率 <span class="field-hint">选填</span></label>
+          <input type="number" id="commission" inputmode="decimal" step="0.01" class="input-lg" placeholder="0.1 = 10%">
+        </div>
+      </div>
+      <div class="warnbar hide" id="warnCost">你只填了货本：单均全成本还必须包含 <b>快递、包装、平台技术服务费、支付手续费(~0.6%)、仅退款损耗、运费险</b>，请补齐，否则会高估利润。</div>
+    </div>
+
+    <!-- B 段 -->
+    <div id="fieldB" class="hide space-y-3.5">
+      <div>
+        <label class="field-label mb-1.5">售价（实付到手价）</label>
+        <input type="number" id="price" inputmode="decimal" class="input-lg" placeholder="含券后实际成交价">
+      </div>
+      <div>
+        <label class="field-label mb-1.5">单均全成本</label>
+        <input type="number" id="costB" inputmode="decimal" class="input-lg" placeholder="全成本">
+      </div>
+      <div>
+        <label class="field-label mb-1.5">货本 <span class="field-hint">仅提醒</span></label>
+        <input type="number" id="goodsCostB" inputmode="decimal" class="input-lg" placeholder="只报货本需补齐">
+      </div>
+
+      <div id="billClick" class="space-y-3.5">
+        <div>
+          <label class="field-label mb-1.5">广告总消耗</label>
+          <input type="number" id="adCost" inputmode="decimal" class="input-lg" placeholder="整批总消耗">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">支付订单数</label>
+          <input type="number" id="payOrderNum" inputmode="decimal" class="input-lg" placeholder="广告归因支付单">
+        </div>
+      </div>
+
+      <div id="billDeal" class="hide space-y-3.5">
+        <div>
+          <label class="field-label mb-1.5">每单出价</label>
+          <input type="number" id="bidPerOrder" inputmode="decimal" class="input-lg" placeholder="成交出价">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">支付订单数</label>
+          <input type="number" id="payOrderNumDeal" inputmode="decimal" class="input-lg" placeholder="广告归因支付单">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">后台实际总消耗 <span class="field-hint">选填·校验自然单</span></label>
+          <input type="number" id="adCostDeal" inputmode="decimal" class="input-lg" placeholder="留空按 出价×订单数">
+        </div>
+      </div>
+
+      <div>
+        <label class="field-label mb-1.5">退款金额（含仅退款）</label>
+        <input type="number" id="refundAmount" inputmode="decimal" class="input-lg" placeholder="广告归因退款总金额">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="field-label mb-1.5">退款回收率 k <span class="field-hint">仅退款≈0</span></label>
+          <input type="number" id="kB" inputmode="decimal" step="0.01" value="0" class="input-lg" placeholder="0">
+        </div>
+        <div>
+          <label class="field-label mb-1.5">进宝佣金率 <span class="field-hint">选填</span></label>
+          <input type="number" id="commissionB" inputmode="decimal" step="0.01" class="input-lg" placeholder="0.1 = 10%">
+        </div>
+      </div>
+      <div class="warnbar hide" id="warnCostB">你只填了货本：单均全成本还必须包含 <b>快递、包装、平台技术服务费、支付手续费(~0.6%)、仅退款损耗、运费险</b>，请补齐。</div>
+    </div>
+  </section>
+
+  <!-- 结果区 -->
+  <div id="resultArea" class="mt-4"></div>
+
+  <!-- 底部 -->
+  <footer class="mt-8 text-center text-[12px] text-[var(--ink-sub)] leading-7">
+    <div>制作人 <b class="text-[var(--ink)]">uuuu</b> ｜ GitHub <b class="text-[var(--ink)]">Aiiuu</b></div>
+    <a href="https://github.com/Aiiuu" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 mt-1 px-4 py-1.5 rounded-full font-semibold"
+       style="background:color-mix(in srgb, var(--ok) 12%, transparent);color:var(--ok);border:1px solid color-mix(in srgb, var(--ok) 30%, transparent)">
+      ⭐ 觉得好用？去 GitHub 点个 Star 支持一下
+    </a>
+    <div class="mt-1 text-[11px] opacity-70">仅供测算参考，不构成投放建议 · 数据以拼多多后台为准</div>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var mode = 'A';            // A 算定价 / B 算投产比 / C 两个都要
+  var bill = 'click';        // click 点击扣费 OCPX / deal 成交出价
+
+  var $ = function(id){ return document.getElementById(id); };
+  function num(id){
+    var v = $(id).value;
+    if(v === '' || v === null) return NaN;
+    var n = parseFloat(v);
+    return isNaN(n) ? NaN : n;
+  }
+  function fmt(n, d){
+    if(!isFinite(n)) return '—';
+    d = (d === undefined) ? 2 : d;
+    var neg = n < 0;
+    var abs = Math.abs(n).toFixed(d);
+    var parts = abs.split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return (neg?'-':'') + parts.join('.');
+  }
+  function pct(n){ return isFinite(n) ? (n*100).toFixed(1)+'%' : '—'; }
+  function money(n){ return isFinite(n) ? '¥'+fmt(n,2) : '—'; }
+  function mult(n){ return isFinite(n) ? fmt(n,2)+'×' : '—'; }
+  function cls(flag){ return flag ? 'pos' : (flag===false ? 'neg' : 'mid'); }
+
+  function summary(lines){
+    return '<section class="lg p-4 mb-4 text-[13px]">'+
+      '<div class="rim"></div>'+
+      lines.filter(Boolean).map(function(l){
+        var i = l.indexOf('：');
+        if(i<0) return '<div class="flex justify-between py-1"><b>'+l+'</b></div>';
+        return '<div class="flex justify-between py-1"><span class="text-[var(--ink-sub)]">'+l.slice(0,i)+'</span><b>'+l.slice(i+1)+'</b></div>';
+      }).join('')+'</section>';
+  }
+
+  function concl(level, safety, advice, extra){
+    var map = {
+      profit:{txt:'盈利',cls:'profit'}, thin:{txt:'薄利',cls:'thin'},
+      even:{txt:'保本',cls:'even'}, loss:{txt:'亏损',cls:'loss'}
+    };
+    var m = map[level];
+    var s = safety && isFinite(safety) ? ('安全垫 ' + pct(safety)) : '';
+    var html = '<div class="concl '+m.cls+'"><span class="badge">'+m.txt+'</span>'+ s +'<br>'+ advice +'</div>';
+    if(extra) html += '<div class="warnbar mt-2.5">'+ extra +'</div>';
+    return html;
+  }
+
+  function bigs(arr){
+    return '<div class="grid grid-cols-3 gap-2.5 mb-3.5">'+ arr.map(function(b){
+      var c = b.cls ? b.cls : '';
+      return '<div class="lg p-3 text-center"><div class="rim"></div>'+
+        '<div class="big-num '+c+'">'+b.v+'</div><div class="stat-label">'+b.l+'</div></div>';
+    }).join('') +'</div>';
+  }
+
+  function details(rows){
+    return '<div class="pt-2 mt-1" style="border-top:1px solid var(--glass-stroke-inner)">'+ rows.map(function(r){
+      var c = r.cls !== undefined ? (' class="'+cls(r.cls)+'"') : '';
+      return '<div class="d-row"><span class="k">'+r.k+'</span><span class="v"'+c+'>'+r.v+'</span></div>';
+    }).join('') +'</div>';
+  }
+
+  function formulaCard(rows){
+    return '<section class="lg p-5 mt-4"><div class="rim"></div>'+
+      '<div class="flex items-center gap-2 mb-2"><h2 class="text-[15px] font-bold">原公式对照</h2></div>'+
+      '<div>'+ rows.map(function(r){
+        return '<div class="f-row"><span class="expr">'+r.expr+'</span><span class="fv">'+r.v+'</span></div>';
+      }).join('') +'</div></section>';
+  }
+
+  function section(title, tag, inner){
+    return '<section class="lg lg-hover p-5 mt-4"><div class="rim"></div>'+
+      '<div class="flex items-center gap-2 mb-1"><h2 class="text-[15px] font-bold">'+title+'</h2></div>'+
+      inner +'</section>';
+  }
+
+  function calc(){
+    var html = '';
+    var gcA = num('goodsCost'), costA = num('cost');
+    if(isFinite(gcA) && isFinite(costA) && Math.abs(costA - gcA) < 0.005){ $('warnCost').classList.remove('hide'); }
+    else { $('warnCost').classList.add('hide'); }
+    var gcB = num('goodsCostB'), costBv = num('costB');
+    if(isFinite(gcB) && isFinite(costBv) && Math.abs(costBv - gcB) < 0.005){ $('warnCostB').classList.remove('hide'); }
+    else { $('warnCostB').classList.add('hide'); }
+
+    if(mode === 'A'){ html = calcA(); }
+    else if(mode === 'B'){ html = calcB(); }
+    else { html = calcA(true); html += calcBSim(); }
+    $('resultArea').innerHTML = html;
+
+    // 用 Framer Motion 做入场动画（Apple 弹簧插值）
+    if(window.motion && typeof window.motion.animate === 'function'){
+      var cards = $('resultArea').querySelectorAll('.lg');
+      cards.forEach(function(el, idx){
+        try {
+          window.motion.animate(el,
+            { opacity: [0,1], y: [16,0], scale: [0.98,1] },
+            { duration: 0.6, delay: idx*0.06, easing: [0.16,1,0.3,1] }
+          );
+        } catch(e){}
+      });
+    }
+  }
+
+  function calcA(forC){
+    var cost = num('cost');
+    var targetRoi = num('targetRoi');
+    var adPer = num('adPerOrder');
+    var profit = num('profit'); if(!isFinite(profit)) profit = 0;
+    var r = num('refundRate'); if(!isFinite(r)) r = 0;
+    var k = num('k'); if(!isFinite(k)) k = 0;
+    var comm = num('commission'); if(!isFinite(comm)) comm = 0;
+
+    if(!isFinite(cost) || cost < 0){
+      return section('算定价','','<div class="warnbar">请输入有效的「单均全成本」。</div>');
+    }
+    if(r < 0 || r >= 1){
+      return section('算定价','','<div class="warnbar">退款率 r 需满足 0 ≤ r &lt; 1。退款率 ≥ 100% 直接判亏损、无法定价。</div>');
+    }
+    var hasRoi = isFinite(targetRoi) && targetRoi > 0;
+    var hasAd = isFinite(adPer) && adPer >= 0;
+    if(!hasRoi && !hasAd){
+      return section('算定价','','<div class="warnbar">「目标投产比」和「每单广告费」至少填一个。</div>');
+    }
+
+    var denom = 1 - r;
+    var price, adFee, warn='', noSolution = false;
+
+    if(hasAd){
+      adFee = adPer;
+      price = (cost*(1 - r*k) + adFee + profit) / denom;
+      var roi_implied = price / adFee;
+      if(adFee > 0 && roi_implied < 2){
+        warn = '广告费占售价过高（投产仅 '+fmt(roi_implied,1)+'×），定价被抬高，建议压缩广告费或提升转化。';
+      }
+    } else {
+      var threshold = 1/denom;
+      if(targetRoi <= threshold){ noSolution = true; }
+      else {
+        var d2 = denom - 1/targetRoi;
+        if(d2 <= 0){ noSolution = true; }
+        else {
+          price = (cost*(1 - r*k) + profit) / d2;
+          adFee = price / targetRoi;
+          if(targetRoi < 2){ warn = '目标投产比 < 2×，广告费占售价过高、定价被抬高。'; }
+        }
+      }
+    }
+
+    var breakPrice, breakAd;
+    if(hasAd){ breakPrice = (cost*(1-r*k) + adFee) / denom; breakAd = adFee; }
+    else if(!noSolution){ breakPrice = (cost*(1-r*k)) / (denom - 1/targetRoi); breakAd = breakPrice/targetRoi; }
+
+    var grossRate = noSolution ? NaN : (price - cost) / price;
+    var roiBreak = isFinite(grossRate) ? 1/grossRate : NaN;
+    var roiBreakFix = isFinite(roiBreak) ? roiBreak/(1-r) : NaN;
+
+    var lvl = 'profit';
+    if(noSolution){ lvl='loss'; }
+    else if(profit > 0.01){ lvl='profit'; }
+    else if(profit < -0.01){ lvl='loss'; }
+    else { lvl='even'; }
+
+    var safety = (hasRoi && targetRoi>0 && isFinite(roiBreakFix)) ? (targetRoi - roiBreakFix)/targetRoi : null;
+
+    var advice = noSolution
+      ? '目标投产比 ≤ '+fmt(1/denom,2)+'×（=1/(1−退款率)），无解：广告费吃掉全部毛利，投多少都亏，先降退款或提毛利。'
+      : (lvl==='profit' ? '按此定价可达成目标净利，但务必核对「平台建议价/同层竞品价」，高于它会掉曝光（价格力机制）。'
+        : (lvl==='even' ? '此定价仅保本，无利润空间，建议压成本或提价。'
+        : '此定价仍亏损，成本或广告费过高，需优化供应链或换投放策略。'));
+
+    var sum = [
+      '算定价｜扣费方式：'+(bill==='click'?'点击扣费 OCPX':'成交出价'),
+      '单均全成本：'+money(cost),
+      hasRoi ? '目标投产比：'+fmt(targetRoi,2)+'×' : null,
+      hasAd ? '每单广告费：'+money(adPer) : null,
+      '目标单均净利：'+money(profit)+' ｜ 退款率：'+pct(r)+' ｜ k：'+fmt(k,2)
+    ];
+
+    var inner = '';
+    if(noSolution){
+      inner += bigs([
+        {v:'无解', l:'建议定价', cls:'bad'},
+        {v:fmt(1/denom,2)+'×', l:'无解临界 ROI', cls:'warn'},
+        {v:money(breakPrice), l:'保本价(参考)', cls:'warn'}
+      ]);
+    } else {
+      inner += bigs([
+        {v:money(price), l:'建议定价', cls:'primary'},
+        {v:money(adFee), l:'折合每单广告费', cls:'warn'},
+        {v:money(profit), l:'目标单均净利', cls:'good'}
+      ]);
+    }
+    inner += details([
+      {k:'保本定价（利润=0）', v: noSolution?'—':money(breakPrice), cls:null},
+      {k:'毛利率 gross_rate', v: noSolution?'—':pct(grossRate)},
+      {k:'对净ROI保本线', v: noSolution?'—':mult(roiBreak)},
+      {k:'对后台ROI保本线(修正)', v: noSolution?'—':mult(roiBreakFix)},
+      {k:'退款率', v: pct(r)}
+    ]);
+    if(warn) inner += '<div class="warnbar mt-2.5">'+warn+'</div>';
+    inner += concl(lvl, safety, advice);
+
+    var html = summary(sum);
+    html += section('定价结果', forC?'第一步':'', inner);
+    html += formulaCard([
+      {expr:'保本定价 = [成本×(1−r·k) + 广告费] ÷ (1−r)', v: noSolution?'—':money(breakPrice)},
+      {expr:'定价 = [成本×(1−r·k) + 广告费 + 利润] ÷ (1−r)', v: noSolution?'—':money(price)},
+      {expr:'广告费 = 定价 ÷ 目标投产比', v: noSolution?'—':money(adFee)},
+      {expr:'毛利率 = (售价−成本) ÷ 售价', v: noSolution?'—':pct(grossRate)},
+      {expr:'保本线(净) = 1 ÷ 毛利率', v: noSolution?'—':mult(roiBreak)},
+      {expr:'保本线(后台) = 保本线(净) ÷ (1−退款率)', v: noSolution?'—':mult(roiBreakFix)}
+    ]);
+    return html;
+  }
+
+  function calcB(){ return calcBImpl(true); }
+
+  function calcBSim(){
+    var cost = num('cost');
+    var targetRoi = num('targetRoi');
+    var adPer = num('adPerOrder');
+    var profit = num('profit'); if(!isFinite(profit)) profit = 0;
+    var r = num('refundRate'); if(!isFinite(r)) r = 0;
+    var k = num('k'); if(!isFinite(k)) k = 0;
+    var comm = num('commission'); if(!isFinite(comm)) comm = 0;
+    if(!isFinite(cost) || cost < 0) return '';
+
+    var hasRoi = isFinite(targetRoi) && targetRoi > 0;
+    var hasAd = isFinite(adPer) && adPer >= 0;
+    if(!hasRoi && !hasAd) return '';
+    if(r >= 1) return '';
+
+    var denom = 1 - r;
+    var price, adFee;
+    if(hasAd){ adFee = adPer; price = (cost*(1-r*k)+adFee+profit)/denom; }
+    else {
+      if(targetRoi <= 1/denom) return '';
+      var d2 = denom - 1/targetRoi;
+      if(d2 <= 0) return '';
+      price = (cost*(1-r*k)+profit)/d2;
+      adFee = price/targetRoi;
+    }
+    var n = 100;
+    var payGmv = price * n;
+    var adCost = adFee * n;
+    var refundAmount = payGmv * r;
+    return calcBImpl(false, { price:price, cost:cost, adCost:adCost, payOrderNum:n, refundAmount:refundAmount, k:k, comm:comm, sim:true, adFee:adFee });
+  }
+
+  function calcBImpl(realInput, sim){
+    sim = sim || null;
+    var price, cost, adCost, payOrderNum, refundAmount, k, comm, adFee, bidPer, dealN;
+
+    if(sim){
+      price = sim.price; cost = sim.cost; adCost = sim.adCost;
+      payOrderNum = sim.payOrderNum; refundAmount = sim.refundAmount;
+      k = sim.k; comm = sim.comm; adFee = sim.adFee;
+    } else {
+      price = num('price'); cost = num('costB'); refundAmount = num('refundAmount');
+      k = num('kB'); if(!isFinite(k)) k = 0;
+      comm = num('commissionB'); if(!isFinite(comm)) comm = 0;
+      if(bill === 'click'){
+        adCost = num('adCost'); payOrderNum = num('payOrderNum');
+      } else {
+        bidPer = num('bidPerOrder'); dealN = num('payOrderNumDeal');
+        var adCostDeal = num('adCostDeal');
+        if(isFinite(bidPer) && isFinite(dealN) && dealN > 0){
+          adCost = (isFinite(adCostDeal) && adCostDeal >= 0) ? adCostDeal : (bidPer * dealN);
+          payOrderNum = dealN;
+        } else { adCost = NaN; payOrderNum = NaN; }
+      }
+    }
+
+    var err = [];
+    if(!isFinite(price) || price <= 0) err.push('售价');
+    if(!isFinite(cost) || cost < 0) err.push('单均全成本');
+    if(!isFinite(payOrderNum) || payOrderNum <= 0) err.push('支付订单数');
+    if(!isFinite(refundAmount) || refundAmount < 0) err.push('退款金额');
+    if(err.length){
+      if(sim) return '';
+      return section('算投产比','','<div class="warnbar">缺少必要参数：'+err.join('、')+'，请补充。</div>');
+    }
+
+    var payGmv = price * payOrderNum;
+    if(payGmv <= 0){
+      return section('算投产比','','<div class="warnbar">pay_gmv = 0，全部拒算。</div>');
+    }
+    var refundRate = refundAmount / payGmv;
+    if(refundRate >= 1){
+      if(sim) return '';
+      return section('算投产比','','<div class="warnbar">退款率 ≥ 100%（'+pct(refundRate)+'），直接判亏损，不计算 ROI。</div>');
+    }
+
+    var netGmv = payGmv - refundAmount;
+    var grossRate = (price - cost) / price;
+    var roiBreak = grossRate > 0 ? 1/grossRate : Infinity;
+    var roiBreakFix = (1 - refundRate) > 0 ? roiBreak/(1-refundRate) : Infinity;
+
+    var realCost = cost * payOrderNum * (1 - refundRate * k);
+    var adGross = netGmv * grossRate;
+    var adNetProfit = adGross - adCost;
+    var trueNetProfit = netGmv * (1 - comm) - realCost - adCost;
+
+    var roiPay = (isFinite(adCost) && adCost > 0) ? payGmv/adCost : null;
+    var roiNet = (isFinite(adCost) && adCost > 0) ? netGmv/adCost : null;
+    var perNet = trueNetProfit / payOrderNum;
+
+    var adPerOrderReal = (isFinite(adCost) && payOrderNum>0) ? adCost/payOrderNum : 0;
+    var denomTrue = (1-refundRate)*(1-comm);
+    var breakPriceTrue = denomTrue > 0 ? (cost*(1-refundRate*k) + adPerOrderReal)/denomTrue : Infinity;
+
+    var safety = (isFinite(roiBreakFix) && isFinite(roiPay) && roiPay>0 && isFinite(roiBreakFix))
+      ? (roiPay - roiBreakFix)/roiPay : null;
+
+    // 成交出价校验：|ad_cost − 出价×订单数|/ad_cost > 5% → 提示混入自然单
+    var dealWarn = '';
+    if(!sim && bill==='deal' && isFinite(bidPer) && isFinite(dealN) && dealN>0 && isFinite(adCost) && adCost>0){
+      var expect = bidPer * dealN;
+      var gap = Math.abs(adCost - expect) / adCost;
+      if(gap > 0.05){
+        dealWarn = '后台实际总消耗与「每单出价×订单数」偏差 ' + pct(gap) + '（>5%），疑似混入自然单或口径不一致，请核对广告归因。';
+      }
+    }
+
+    var lvl, advice;
+    if(!isFinite(adCost) || adCost === 0){
+      lvl = 'even';
+      advice = '广告费为 0，ROI 无意义；单均毛利 ' + money(price - cost) + '，保本定价 ' + money(breakPriceTrue) + '。';
+    } else if(cost >= price){
+      lvl = 'loss';
+      advice = '成本 ≥ 售价（毛利 ≤ 0），保本线记「无解」：投多少都亏，先解决毛利为负的问题。';
+    } else {
+      var margin = trueNetProfit;
+      if(margin > 0.01){ lvl = (safety !== null && isFinite(safety) && safety < 0.15) ? 'thin' : 'profit'; }
+      else if(margin < -0.01){ lvl = 'loss'; }
+      else { lvl = 'even'; }
+      if(lvl === 'profit'){ advice = '当前真实净利润为正、安全垫充足，可继续投放；注意价格力（对比平台建议价/竞品价，高于它掉曝光）。'; }
+      else if(lvl === 'thin'){ advice = '有利润但安全垫偏薄（<15%），波动即可能转亏，建议压成本、提转化后再放量。'; }
+      else if(lvl === 'loss'){ advice = '真实净利润为负，处于亏损：建议降价投、压成本或砍掉高退款SKU。'; }
+      else { advice = '处于保本边缘，建议留出安全垫后再放量。'; }
+    }
+
+    var extra = '';
+    if(!sim && payOrderNum < 10) extra = '样本不足（订单 < 10），别据此放量。';
+    if(!sim && cost >= price) extra += (extra?' ':'') + '保本线记「无解」。';
+
+    var sum = [
+      (sim ? '算投产比｜按建议定价模拟（模拟 100 单）' : '算投产比｜扣费方式：'+(bill==='click'?'点击扣费 OCPX':'成交出价')),
+      '售价：'+money(price)+' ｜ 单均全成本：'+money(cost),
+      '支付订单数：'+fmt(payOrderNum,0)+' 单 ｜ 广告总消耗：'+(isFinite(adCost)?money(adCost):'—'),
+      '退款金额：'+money(refundAmount)+'（退款率 '+pct(refundRate)+'）'
+    ];
+
+    var inner = '';
+    var big1, big2, big3;
+    if(isFinite(adCost) && adCost>0){
+      big1 = {v: mult(roiPay), l:'账面ROI(后台)', cls:'primary'};
+      big2 = {v: mult(roiNet), l:'真实净投产', cls:(roiNet>=roiBreakFix?'good':'bad')};
+      big3 = {v: money(perNet), l:'每单净利', cls:(perNet>=0?'good':'bad')};
+    } else {
+      big1 = {v: money(price-cost), l:'单均毛利', cls:'primary'};
+      big2 = {v: money(breakPriceTrue), l:'保本定价', cls:'warn'};
+      big3 = {v: pct(refundRate), l:'退款率', cls:'warn'};
+    }
+    inner += bigs([big1,big2,big3]);
+    inner += details([
+      {k:'支付GMV pay_gmv', v: money(payGmv)},
+      {k:'净GMV net_gmv', v: money(netGmv)},
+      {k:'账面ROI roi_pay', v: mult(roiPay)},
+      {k:'真实净投产 roi_net', v: mult(roiNet)},
+      {k:'毛利率', v: pct(grossRate)},
+      {k:'退款率', v: pct(refundRate)},
+      {k:'真实成本 real_cost', v: money(realCost)},
+      {k:'广告毛利总额(乐观)', v: money(adGross)},
+      {k:'广告净利润(乐观)', v: money(adNetProfit), cls: adNetProfit},
+      {k:'真实净利润', v: money(trueNetProfit), cls: trueNetProfit},
+      {k:'保本ROI(基础·净)', v: mult(roiBreak)},
+      {k:'保本ROI(修正·后台)', v: mult(roiBreakFix)},
+      {k:'保本定价(真实净利=0)', v: money(breakPriceTrue)},
+      {k:'应定价(=保本定价，无目标净利)', v: money(breakPriceTrue)}
+    ]);
+    inner += concl(lvl, safety, advice, extra);
+    if(dealWarn) inner += '<div class="warnbar mt-2.5">'+dealWarn+'</div>';
+
+    var html = summary(sum);
+    html += section('投产比结果', sim?'第二步·按建议定价模拟':'', inner);
+    html += formulaCard([
+      {expr:'pay_gmv = price × pay_order_num', v: money(payGmv)},
+      {expr:'net_gmv = pay_gmv − refund_amount', v: money(netGmv)},
+      {expr:'roi_pay = pay_gmv ÷ ad_cost', v: mult(roiPay)},
+      {expr:'roi_net = net_gmv ÷ ad_cost', v: mult(roiNet)},
+      {expr:'gross_rate = (price − cost) ÷ price', v: pct(grossRate)},
+      {expr:'refund_rate = refund_amount ÷ pay_gmv', v: pct(refundRate)},
+      {expr:'roi_break_even = 1 ÷ gross_rate', v: mult(roiBreak)},
+      {expr:'roi_break_fix = roi_break_even ÷ (1 − refund_rate)', v: mult(roiBreakFix)},
+      {expr:'real_cost = cost × pay_order_num × (1 − refund_rate × k)', v: money(realCost)},
+      {expr:'广告毛利总额 = net_gmv × gross_rate', v: money(adGross)},
+      {expr:'广告净利润 = 广告毛利总额 − ad_cost', v: money(adNetProfit)},
+      {expr:'真实净利润 = net_gmv × (1 − commission_rate) − real_cost − ad_cost', v: money(trueNetProfit)}
+    ]);
+    return html;
+  }
+
+  // ============ 事件绑定 ============
+  function pop(el){
+    el.classList.remove('pop');
+    // 强制重排以重新触发动画
+    void el.offsetWidth;
+    el.classList.add('pop');
+  }
+
+  var modeBtns = $('modes').querySelectorAll('button');
+  modeBtns.forEach(function(b){
+    b.addEventListener('click', function(){
+      mode = b.getAttribute('data-mode');
+      modeBtns.forEach(function(x){ x.classList.toggle('active', x===b); });
+      pop(b);
+      toggleFields(); calc();
+    });
+  });
+
+  var billBtns = $('billSeg').querySelectorAll('button');
+  billBtns.forEach(function(b){
+    b.addEventListener('click', function(){
+      bill = b.getAttribute('data-bill');
+      billBtns.forEach(function(x){ x.classList.toggle('active', x===b); });
+      pop(b);
+      toggleBill(); toggleFields(); calc();
+    });
+  });
+
+  function toggleBill(){
+    $('billClick').classList.toggle('hide', bill!=='click');
+    $('billDeal').classList.toggle('hide', bill!=='deal');
+  }
+
+  function toggleFields(){
+    var showA = (mode==='A' || mode==='C');
+    var showB = (mode==='B' || mode==='C');
+    $('fieldA').classList.toggle('hide', !showA);
+    $('fieldB').classList.toggle('hide', !showB);
+    var hint = document.querySelector('.hint');
+    if(mode==='C'){
+      hint.innerHTML = '模式C：先填「算定价」参数，系统自动把建议定价回填成售价、模拟 100 单跑投产比。金额单位「元」。';
+    } else {
+      hint.innerHTML = '金额均为「元」；售价 = 实付到手价（含券/满减/百亿补贴），订单只算广告归因。';
+    }
+  }
+
+  var inputs = document.querySelectorAll('input[type=number]');
+  inputs.forEach(function(inp){ inp.addEventListener('input', calc); });
+
+  // ============ 指针高光（跟随光标，Apple 风格交互） ============
+  function bindLens(){
+    document.querySelectorAll('.lg').forEach(function(el){
+      if(el._lensBound) return;
+      el._lensBound = true;
+      el.addEventListener('pointermove', function(e){
+        var r = el.getBoundingClientRect();
+        var x = ((e.clientX - r.left) / r.width)  * 100;
+        var y = ((e.clientY - r.top)  / r.height) * 100;
+        el.style.setProperty('--lx', x.toFixed(1) + '%');
+        el.style.setProperty('--ly', y.toFixed(1) + '%');
+      });
+      el.addEventListener('pointerleave', function(){
+        el.style.setProperty('--lx', '50%');
+        el.style.setProperty('--ly', '0%');
+      });
+    });
+  }
+
+  // 结果区每次重绘后重新绑定透镜
+  var _origCalc = calc;
+  calc = function(){
+    _origCalc();
+    bindLens();
+  };
+
+  toggleFields();
+  toggleBill();
+  bindLens();
+  calc();
+})();
+</script>
+</body>
+</html>
